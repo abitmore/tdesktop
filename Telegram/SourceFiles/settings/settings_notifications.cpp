@@ -28,7 +28,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/platform_specific.h"
 #include "platform/platform_notifications_manager.h"
 #include "base/platform/base_platform_info.h"
-#include "base/call_delayed.h"
 #include "mainwindow.h"
 #include "core/application.h"
 #include "main/main_session.h"
@@ -36,6 +35,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "api/api_authorizations.h"
 #include "api/api_ringtones.h"
+#include "data/data_chat_filters.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
 #include "data/notify/data_notify_settings.h"
@@ -133,13 +133,10 @@ private:
 	void startAnimation();
 	void animationCallback();
 
-	void destroyDelayed();
-
 	NotificationsCount *_owner;
 	QPixmap _cache;
 	Ui::Animations::Simple _opacity;
 	bool _hiding = false;
-	bool _deleted = false;
 
 };
 
@@ -390,8 +387,10 @@ int NotificationsCount::resizeGetHeight(int newWidth) {
 void NotificationsCount::prepareNotificationSampleSmall() {
 	auto width = st::notificationSampleSize.width();
 	auto height = st::notificationSampleSize.height();
-	auto sampleImage = QImage(width * cIntRetinaFactor(), height * cIntRetinaFactor(), QImage::Format_ARGB32_Premultiplied);
-	sampleImage.setDevicePixelRatio(cRetinaFactor());
+	auto sampleImage = QImage(
+		QSize(width, height) * style::DevicePixelRatio(),
+		QImage::Format_ARGB32_Premultiplied);
+	sampleImage.setDevicePixelRatio(style::DevicePixelRatio());
 	sampleImage.fill(st::notificationBg->c);
 	{
 		Painter p(&sampleImage);
@@ -422,28 +421,29 @@ void NotificationsCount::prepareNotificationSampleSmall() {
 		p.fillRect(style::rtlrect(closeLeft, padding, padding, padding, width), st::notificationSampleCloseFg);
 	}
 	_notificationSampleSmall = Ui::PixmapFromImage(std::move(sampleImage));
-	_notificationSampleSmall.setDevicePixelRatio(cRetinaFactor());
+	_notificationSampleSmall.setDevicePixelRatio(style::DevicePixelRatio());
 }
 
 void NotificationsCount::prepareNotificationSampleUserpic() {
 	if (_notificationSampleUserpic.isNull()) {
 		_notificationSampleUserpic = Ui::PixmapFromImage(
 			Window::LogoNoMargin().scaled(
-				st::notifyPhotoSize * cIntRetinaFactor(),
-				st::notifyPhotoSize * cIntRetinaFactor(),
+				st::notifyPhotoSize * style::DevicePixelRatio(),
+				st::notifyPhotoSize * style::DevicePixelRatio(),
 				Qt::IgnoreAspectRatio,
 				Qt::SmoothTransformation));
-		_notificationSampleUserpic.setDevicePixelRatio(cRetinaFactor());
+		_notificationSampleUserpic.setDevicePixelRatio(
+			style::DevicePixelRatio());
 	}
 }
 
 void NotificationsCount::prepareNotificationSampleLarge() {
 	int w = st::notifyWidth, h = st::notifyMinHeight;
 	auto sampleImage = QImage(
-		w * cIntRetinaFactor(),
-		h * cIntRetinaFactor(),
+		w * style::DevicePixelRatio(),
+		h * style::DevicePixelRatio(),
 		QImage::Format_ARGB32_Premultiplied);
-	sampleImage.setDevicePixelRatio(cRetinaFactor());
+	sampleImage.setDevicePixelRatio(style::DevicePixelRatio());
 	sampleImage.fill(st::notificationBg->c);
 	{
 		Painter p(&sampleImage);
@@ -662,18 +662,6 @@ void NotificationsCount::SampleWidget::animationCallback() {
 			_owner->removeSample(this);
 		}
 		hide();
-		destroyDelayed();
-	}
-}
-
-void NotificationsCount::SampleWidget::destroyDelayed() {
-	if (_deleted) return;
-	_deleted = true;
-
-	// Ubuntu has a lag if deleteLater() called immediately.
-	if constexpr (Platform::IsLinux()) {
-		base::call_delayed(1000, this, [this] { delete this; });
-	} else {
 		deleteLater();
 	}
 }
@@ -876,6 +864,27 @@ NotifyViewCheckboxes SetupNotifyViewOptions(
 void SetupAdvancedNotifications(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container) {
+	if (Platform::IsWindows()) {
+		const auto skipInFocus = container->add(object_ptr<Button>(
+			container,
+			tr::lng_settings_skip_in_focus(),
+			st::settingsButtonNoIcon
+		))->toggleOn(rpl::single(Core::App().settings().skipToastsInFocus()));
+
+		skipInFocus->toggledChanges(
+		) | rpl::filter([](bool checked) {
+			return (checked != Core::App().settings().skipToastsInFocus());
+		}) | rpl::start_with_next([=](bool checked) {
+			Core::App().settings().setSkipToastsInFocus(checked);
+			Core::App().saveSettingsDelayed();
+			if (checked && Platform::Notifications::SkipToastForCustom()) {
+				using Change = Window::Notifications::ChangeType;
+				Core::App().notifications().notifySettingsChanged(
+					Change::DesktopEnabled);
+			}
+		}, skipInFocus->lifetime());
+	}
+
 	Ui::AddSkip(container, st::settingsCheckboxesSkip);
 	Ui::AddDivider(container);
 	Ui::AddSkip(container, st::settingsCheckboxesSkip);
@@ -1098,6 +1107,16 @@ void SetupNotificationsContent(
 		tr::lng_settings_include_muted(),
 		st::settingsButtonNoIcon));
 	muted->toggleOn(rpl::single(settings.includeMutedCounter()));
+	const auto mutedFolders = session->data().chatsFilters().has()
+		? container->add(object_ptr<Button>(
+			container,
+			tr::lng_settings_include_muted_folders(),
+			st::settingsButtonNoIcon))
+		: nullptr;
+	if (mutedFolders) {
+		mutedFolders->toggleOn(
+			rpl::single(settings.includeMutedCounterFolders()));
+	}
 	const auto count = container->add(object_ptr<Button>(
 		container,
 		tr::lng_settings_count_unread(),
@@ -1215,6 +1234,17 @@ void SetupNotificationsContent(
 		changed(Change::IncludeMuted);
 	}, muted->lifetime());
 
+	if (mutedFolders) {
+		mutedFolders->toggledChanges(
+		) | rpl::filter([=](bool checked) {
+			return (checked
+				!= Core::App().settings().includeMutedCounterFolders());
+		}) | rpl::start_with_next([=](bool checked) {
+			Core::App().settings().setIncludeMutedCounterFolders(checked);
+			changed(Change::IncludeMuted);
+		}, mutedFolders->lifetime());
+	}
+
 	count->toggledChanges(
 	) | rpl::filter([=](bool checked) {
 		return (checked != Core::App().settings().countUnreadMessages());
@@ -1281,17 +1311,11 @@ rpl::producer<QString> Notifications::title() {
 	return tr::lng_settings_section_notify();
 }
 
-rpl::producer<Type> Notifications::sectionShowOther() {
-	return _showOther.events();
-}
-
 void Notifications::setupContent(
 		not_null<Window::SessionController*> controller) {
 	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
 
-	SetupNotifications(controller, content, [=](Type type) {
-		_showOther.fire_copy(type);
-	});
+	SetupNotifications(controller, content, showOtherMethod());
 
 	Ui::ResizeFitChild(this, content);
 }

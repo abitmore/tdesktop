@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/peer_list_dummy.h"
+#include "ui/effects/premium_bubble.h"
 #include "ui/effects/premium_graphics.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/wrap/padding_wrap.h"
@@ -135,6 +136,12 @@ private:
 	rpl::event_stream<int> _selectedCountChanges;
 
 };
+
+[[nodiscard]] Ui::Premium::BubbleType ChooseBubbleType(bool premium) {
+	return premium
+		? Ui::Premium::BubbleType::Premium
+		: Ui::Premium::BubbleType::NoPremium;
+}
 
 void InactiveDelegate::peerListSetTitle(rpl::producer<QString> title) {
 }
@@ -322,7 +329,7 @@ void PublicsController::prepare() {
 		auto &owner = _navigation->session().data();
 		for (const auto &chat : chats) {
 			if (const auto peer = owner.processChat(chat)) {
-				if (!peer->isChannel() || peer->userName().isEmpty()) {
+				if (!peer->isChannel() || peer->username().isEmpty()) {
 					continue;
 				}
 				appendRow(peer);
@@ -346,7 +353,7 @@ void PublicsController::rowRightActionClicked(not_null<PeerListRow*> row) {
 	const auto text = textMethod(
 		tr::now,
 		lt_link,
-		peer->session().createInternalLink(peer->userName()),
+		peer->session().createInternalLink(peer->username()),
 		lt_group,
 		peer->name());
 	const auto confirmText = tr::lng_channels_too_much_public_revoke(
@@ -389,7 +396,7 @@ std::unique_ptr<PeerListRow> PublicsController::createRow(
 	auto result = std::make_unique<PeerListRowWithLink>(peer);
 	result->setActionLink(tr::lng_channels_too_much_public_revoke(tr::now));
 	result->setCustomStatus(
-		_navigation->session().createInternalLink(peer->userName()));
+		_navigation->session().createInternalLink(peer->username()));
 	return result;
 }
 
@@ -418,8 +425,10 @@ void SimpleLimitBox(
 		BoxShowFinishes(box),
 		0,
 		descriptor.current,
-		descriptor.premiumLimit,
-		premiumPossible,
+		(descriptor.complexRatio
+			? descriptor.premiumLimit
+			: 2 * descriptor.current),
+		ChooseBubbleType(premiumPossible),
 		descriptor.phrase,
 		descriptor.icon);
 	Ui::AddSkip(top, st::premiumLineTextSkip);
@@ -769,7 +778,7 @@ void FilterLinksLimitBox(
 			premiumLimit,
 			&st::premiumIconChats,
 			std::nullopt,
-			true });
+			/*true */}); // Don't use real ratio, "Free" doesn't fit.
 }
 
 
@@ -856,7 +865,7 @@ void ShareableFiltersLimitBox(
 			premiumLimit,
 			&st::premiumIconFolders,
 			std::nullopt,
-			true });
+			/*true*/ }); // Don't use real ratio, "Free" doesn't fit.
 }
 
 void FilterPinsLimitBox(
@@ -1107,7 +1116,7 @@ void AccountsLimitBox(
 			: (current > defaultLimit)
 			? (current + 1)
 			: (defaultLimit * 2)),
-		premiumPossible,
+		ChooseBubbleType(premiumPossible),
 		std::nullopt,
 		&st::premiumIconAccounts);
 	Ui::AddSkip(top, st::premiumLineTextSkip);
@@ -1142,7 +1151,7 @@ void AccountsLimitBox(
 		const auto ref = QString();
 
 		const auto wasAccount = &session->account();
-		const auto nowAccount = accounts[group->value()];
+		const auto nowAccount = accounts[group->current()];
 		if (wasAccount == nowAccount) {
 			Settings::ShowPremium(session, ref);
 			return;

@@ -24,7 +24,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
-#include "main/main_account.h"
 #include "base/unixtime.h"
 #include "base/weak_ptr.h"
 #include "ui/controls/who_reacted_context_action.h"
@@ -215,7 +214,10 @@ struct State {
 
 [[nodiscard]] QImage GenerateUserpic(Userpic &userpic, int size) {
 	size *= style::DevicePixelRatio();
-	auto result = userpic.peer->generateUserpicImage(userpic.view, size);
+	auto result = PeerData::GenerateUserpicImage(
+		userpic.peer,
+		userpic.view,
+		size);
 	result.setDevicePixelRatio(style::DevicePixelRatio());
 	return result;
 }
@@ -697,7 +699,7 @@ bool WhoReadExists(not_null<HistoryItem*> item) {
 			|| user->readDatesPrivate()) {
 			return false;
 		}
-		const auto &appConfig = peer->session().account().appConfig();
+		const auto &appConfig = peer->session().appConfig();
 		const auto expirePeriod = appConfig.get<int>(
 			"pm_read_date_expire_period",
 			7 * 86400);
@@ -713,7 +715,7 @@ bool WhoReadExists(not_null<HistoryItem*> item) {
 			&& (megagroup->flags() & ChannelDataFlag::ParticipantsHidden))) {
 		return false;
 	}
-	const auto &appConfig = peer->session().account().appConfig();
+	const auto &appConfig = peer->session().appConfig();
 	const auto expirePeriod = appConfig.get<int>(
 		"chat_read_mark_expire_period",
 		7 * 86400);
@@ -753,6 +755,33 @@ rpl::producer<Ui::WhoReadContent> WhoReacted(
 		not_null<QWidget*> context,
 		const style::WhoRead &st) {
 	return WhoReacted(item, reaction, context, st, nullptr);
+}
+
+[[nodiscard]] rpl::producer<Ui::WhoReadContent> WhenDate(
+		not_null<PeerData*> author,
+		TimeId date,
+		Ui::WhoReadType type) {
+	return rpl::single(Ui::WhoReadContent{
+		.participants = { Ui::WhoReadParticipant{
+			.name = author->name(),
+			.date = FormatReadDate(date, QDateTime::currentDateTime()),
+			.id = author->id.value,
+		} },
+		.type = type,
+		.fullReadCount = 1,
+	});
+}
+
+rpl::producer<Ui::WhoReadContent> WhenEdited(
+		not_null<PeerData*> author,
+		TimeId date) {
+	return WhenDate(author, date, Ui::WhoReadType::Edited);
+}
+
+rpl::producer<Ui::WhoReadContent> WhenOriginal(
+		not_null<PeerData*> author,
+		TimeId date) {
+	return WhenDate(author, date, Ui::WhoReadType::Original);
 }
 
 } // namespace Api

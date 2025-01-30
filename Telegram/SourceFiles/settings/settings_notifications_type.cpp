@@ -43,7 +43,9 @@ struct Factory : AbstractSectionFactory {
 
 	object_ptr<AbstractSection> create(
 		not_null<QWidget*> parent,
-		not_null<Window::SessionController*> controller
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::ScrollArea*> scroll,
+		rpl::producer<Container> containerValue
 	) const final override {
 		return object_ptr<NotificationsType>(parent, controller, type);
 	}
@@ -183,9 +185,11 @@ base::unique_qptr<Ui::PopupMenu> AddExceptionBoxController::rowContextMenu(
 
 auto AddExceptionBoxController::createRow(not_null<History*> history)
 -> std::unique_ptr<AddExceptionBoxController::Row> {
-	if (Data::DefaultNotifyType(history->peer) != _type
-		|| history->peer->isSelf()
-		|| history->peer->isRepliesChat()) {
+	const auto peer = history->peer;
+	if (Data::DefaultNotifyType(peer) != _type
+		|| peer->isSelf()
+		|| peer->isRepliesChat()
+		|| peer->isVerifyCodes()) {
 		return nullptr;
 	}
 	return std::make_unique<Row>(history);
