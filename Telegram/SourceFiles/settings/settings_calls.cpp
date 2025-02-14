@@ -405,7 +405,8 @@ void Calls::initCaptureButton(
 }
 
 void Calls::requestPermissionAndStartTestingMicrophone() {
-	using namespace ::Platform;
+	using PermissionType = ::Platform::PermissionType;
+	using PermissionStatus = ::Platform::PermissionStatus;
 	const auto status = GetPermissionStatus(
 		PermissionType::Microphone);
 	if (status == PermissionStatus::Granted) {
@@ -607,7 +608,7 @@ void ChooseMediaDeviceBox(
 			button->finishAnimating();
 			button->clicks(
 			) | rpl::filter([=] {
-				return (group->value() == index);
+				return (group->current() == index);
 			}) | rpl::start_with_next([=] {
 				choose(id);
 			}, button->lifetime());
@@ -679,7 +680,7 @@ object_ptr<Ui::GenericBox> ChooseCameraDeviceBox(
 		const style::Radio *radioSt) {
 	return Box(
 		ChooseMediaDeviceBox,
-		tr::lng_settings_call_device_default(),
+		tr::lng_settings_call_camera(),
 		Core::App().mediaDevices().devicesValue(DeviceType::Camera),
 		std::move(currentId),
 		std::move(chosen),

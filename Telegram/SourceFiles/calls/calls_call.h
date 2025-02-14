@@ -31,6 +31,7 @@ enum class AudioState;
 namespace Webrtc {
 enum class VideoState;
 class VideoTrack;
+struct DeviceResolvedId;
 } // namespace Webrtc
 
 namespace Calls {
@@ -59,7 +60,9 @@ enum class CallType {
 	Outgoing,
 };
 
-class Call : public base::has_weak_ptr {
+class Call final
+	: public base::has_weak_ptr
+	, private Webrtc::CaptureMuteTracker {
 public:
 	class Delegate {
 	public:
@@ -160,6 +163,18 @@ public:
 		return _remoteVideoState.value();
 	}
 
+	enum class RemoteBatteryState {
+		Low,
+		Normal,
+	};
+	[[nodiscard]] RemoteBatteryState remoteBatteryState() const {
+		return _remoteBatteryState.current();
+	}
+	[[nodiscard]] auto remoteBatteryStateValue() const
+	-> rpl::producer<RemoteBatteryState> {
+		return _remoteBatteryState.value();
+	}
+
 	static constexpr auto kSignalBarStarting = -1;
 	static constexpr auto kSignalBarFinished = -2;
 	static constexpr auto kSignalBarCount = 4;
@@ -206,6 +221,13 @@ public:
 	void toggleCameraSharing(bool enabled);
 	void toggleScreenSharing(std::optional<QString> uniqueId);
 
+	[[nodiscard]] auto playbackDeviceIdValue() const
+		-> rpl::producer<Webrtc::DeviceResolvedId>;
+	[[nodiscard]] auto captureDeviceIdValue() const
+		-> rpl::producer<Webrtc::DeviceResolvedId>;
+	[[nodiscard]] auto cameraDeviceIdValue() const
+		-> rpl::producer<Webrtc::DeviceResolvedId>;
+
 	[[nodiscard]] rpl::lifetime &lifetime() {
 		return _lifetime;
 	}
@@ -249,6 +271,9 @@ private:
 	void setSignalBarCount(int count);
 	void destroyController();
 
+	void captureMuteChanged(bool mute) override;
+	rpl::producer<Webrtc::DeviceResolvedId> captureMuteDeviceId() override;
+
 	void setupMediaDevices();
 	void setupOutgoingVideo();
 	void updateRemoteMediaState(
@@ -260,9 +285,11 @@ private:
 	MTP::Sender _api;
 	Type _type = Type::Outgoing;
 	rpl::variable<State> _state = State::Starting;
-	rpl::variable<RemoteAudioState> _remoteAudioState =
-		RemoteAudioState::Active;
+	rpl::variable<RemoteAudioState> _remoteAudioState
+		= RemoteAudioState::Active;
 	rpl::variable<Webrtc::VideoState> _remoteVideoState;
+	rpl::variable<RemoteBatteryState> _remoteBatteryState
+		= RemoteBatteryState::Normal;
 	rpl::event_stream<Error> _errors;
 	FinishType _finishAfterRequestingCall = FinishType::None;
 	bool _answerAfterDhConfigReceived = false;
@@ -298,6 +325,7 @@ private:
 
 	std::unique_ptr<Media::Audio::Track> _waitingTrack;
 
+	rpl::lifetime _instanceLifetime;
 	rpl::lifetime _lifetime;
 
 };

@@ -11,12 +11,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "base/event_filter.h"
 #include "base/unixtime.h"
+#include "data/data_premium_limits.h"
 #include "boxes/peer_list_box.h"
 #include "data/data_channel.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_session.h"
 #include "lang/lang_keys.h"
-#include "main/main_account.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "main/session/session_show.h"
@@ -202,10 +202,11 @@ void Controller::prepare() {
 	const auto session = &_to->session();
 	auto above = object_ptr<Ui::VerticalLayout>((QWidget*)nullptr);
 	above->add(
-		CreateBoostReplaceUserpics(
+		CreateUserpicsTransfer(
 			above.data(),
 			_selectedPeers.value(),
-			_to),
+			_to,
+			UserpicsTransferType::BoostReplace),
 		st::boxRowPadding + st::boostReplaceUserpicsPadding);
 	above->add(
 		object_ptr<Ui::FlatLabel>(
@@ -340,14 +341,15 @@ object_ptr<Ui::BoxContent> ReassignBoostFloodBox(int seconds, bool group) {
 object_ptr<Ui::BoxContent> ReassignBoostSingleBox(
 		not_null<ChannelData*> to,
 		TakenBoostSlot from,
-		Fn<void(std::vector<int> slots, int sources)> reassign,
+		Fn<void(std::vector<int> slots, int groups, int channels)> reassign,
 		Fn<void()> cancel) {
 	const auto reassigned = std::make_shared<bool>();
 	const auto slot = from.id;
 	const auto peer = to->owner().peer(from.peerId);
+	const auto group = peer->isMegagroup();
 	const auto confirmed = [=](Fn<void()> close) {
 		*reassigned = true;
-		reassign({ slot }, 1);
+		reassign({ slot }, group ? 1 : 0, group ? 0 : 1);
 		close();
 	};
 
@@ -365,10 +367,11 @@ object_ptr<Ui::BoxContent> ReassignBoostSingleBox(
 		});
 		box->verticalLayout()->insert(
 			0,
-			CreateBoostReplaceUserpics(
+			CreateUserpicsTransfer(
 				box,
 				rpl::single(std::vector{ peer }),
-				to),
+				to,
+				UserpicsTransferType::BoostReplace),
 			st::boxRowPadding + st::boostReplaceUserpicsPadding);
 	});
 
@@ -423,14 +426,9 @@ Ui::BoostCounters ParseBoostCounters(
 }
 
 Ui::BoostFeatures LookupBoostFeatures(not_null<ChannelData*> channel) {
-	const auto group = channel->isMegagroup();
-	const auto appConfig = &channel->session().account().appConfig();
-	const auto get = [&](const QString &key, int fallback, bool ok = true) {
-		return ok ? appConfig->get<int>(key, fallback) : 0;
-	};
-
 	auto nameColorsByLevel = base::flat_map<int, int>();
 	auto linkStylesByLevel = base::flat_map<int, int>();
+	const auto group = channel->isMegagroup();
 	const auto peerColors = &channel->session().api().peerColors();
 	const auto &list = group
 		? peerColors->requiredLevelsGroup()
@@ -442,49 +440,66 @@ Ui::BoostFeatures LookupBoostFeatures(not_null<ChannelData*> channel) {
 		}
 		++linkStylesByLevel[level];
 	}
-
+	const auto &themes = channel->owner().cloudThemes().chatThemes();
+	if (themes.empty()) {
+		channel->owner().cloudThemes().refreshChatThemes();
+	}
+	const auto levelLimits = Data::LevelLimits(&channel->session());
 	return Ui::BoostFeatures{
 		.nameColorsByLevel = std::move(nameColorsByLevel),
 		.linkStylesByLevel = std::move(linkStylesByLevel),
-		.linkLogoLevel = get(u"channel_bg_icon_level_min"_q, 4, !group),
-		.transcribeLevel = get(u"group_transcribe_level_min"_q, 6, group),
-		.emojiPackLevel = get(u"group_emoji_stickers_level_min"_q, 4, group),
-		.emojiStatusLevel = get(group
-			? u"group_emoji_status_level_min"_q
-			: u"channel_emoji_status_level_min"_q, 8),
-		.wallpaperLevel = get(group
-			? u"group_wallpaper_level_min"_q
-			: u"channel_wallpaper_level_min"_q, 9),
-		.wallpapersCount = int(
-			channel->owner().cloudThemes().chatThemes().size()),
-		.customWallpaperLevel = get(group
-			? u"channel_custom_wallpaper_level_min"_q
-			: u"group_custom_wallpaper_level_min"_q, 10),
+		.linkLogoLevel = group ? 0 : levelLimits.channelBgIconLevelMin(),
+		.transcribeLevel = group ? levelLimits.groupTranscribeLevelMin() : 0,
+		.emojiPackLevel = group ? levelLimits.groupEmojiStickersLevelMin() : 0,
+		.emojiStatusLevel = group
+			? levelLimits.groupEmojiStatusLevelMin()
+			: levelLimits.channelEmojiStatusLevelMin(),
+		.wallpaperLevel = group
+			? levelLimits.groupWallpaperLevelMin()
+			: levelLimits.channelWallpaperLevelMin(),
+		.wallpapersCount = themes.empty() ? 8 : int(themes.size()),
+		.customWallpaperLevel = group
+			? levelLimits.groupCustomWallpaperLevelMin()
+			: levelLimits.channelCustomWallpaperLevelMin(),
+		.sponsoredLevel = levelLimits.channelRestrictSponsoredLevelMin(),
 	};
 }
 
 int BoostsForGift(not_null<Main::Session*> session) {
-	const auto key = u"boosts_per_sent_gift"_q;
-	return session->account().appConfig().get<int>(key, 0);
+	return session->appConfig().get<int>(u"boosts_per_sent_gift"_q, 0);
 }
 
-[[nodiscard]] int SourcesCount(
+struct Sources {
+	int groups = 0;
+	int channels = 0;
+};
+[[nodiscard]] Sources SourcesCount(
+		not_null<ChannelData*> to,
 		const std::vector<TakenBoostSlot> &from,
 		const std::vector<int> &slots) {
-	auto checked = base::flat_set<PeerId>();
-	checked.reserve(slots.size());
+	auto groups = base::flat_set<PeerId>();
+	groups.reserve(slots.size());
+	auto channels = base::flat_set<PeerId>();
+	channels.reserve(slots.size());
+	const auto owner = &to->owner();
 	for (const auto slot : slots) {
 		const auto i = ranges::find(from, slot, &TakenBoostSlot::id);
 		Assert(i != end(from));
-		checked.emplace(i->peerId);
+		const auto id = i->peerId;
+		if (!groups.contains(id) && !channels.contains(id)) {
+			(owner->peer(id)->isMegagroup() ? groups : channels).insert(id);
+		}
 	}
-	return checked.size();
+	return {
+		.groups = int(groups.size()),
+		.channels = int(channels.size()),
+	};
 }
 
 object_ptr<Ui::BoxContent> ReassignBoostsBox(
 		not_null<ChannelData*> to,
 		std::vector<TakenBoostSlot> from,
-		Fn<void(std::vector<int> slots, int sources)> reassign,
+		Fn<void(std::vector<int> slots, int groups, int channels)> reassign,
 		Fn<void()> cancel) {
 	Expects(!from.empty());
 
@@ -505,10 +520,10 @@ object_ptr<Ui::BoxContent> ReassignBoostsBox(
 		) | rpl::start_with_next([=](std::vector<int> slots) {
 			box->clearButtons();
 			if (!slots.empty()) {
-				const auto sources = SourcesCount(from, slots);
+				const auto sources = SourcesCount(to, from, slots);
 				box->addButton(tr::lng_boost_reassign_button(), [=] {
 					*reassigned = true;
-					reassign(slots, sources);
+					reassign(slots, sources.groups, sources.channels);
 				});
 			}
 			box->addButton(tr::lng_cancel(), [=] {
@@ -523,10 +538,11 @@ object_ptr<Ui::BoxContent> ReassignBoostsBox(
 	return Box<PeerListBox>(std::move(controller), std::move(initBox));
 }
 
-object_ptr<Ui::RpWidget> CreateBoostReplaceUserpics(
+object_ptr<Ui::RpWidget> CreateUserpicsTransfer(
 		not_null<Ui::RpWidget*> parent,
 		rpl::producer<std::vector<not_null<PeerData*>>> from,
-		not_null<PeerData*> to) {
+		not_null<PeerData*> to,
+		UserpicsTransferType type) {
 	struct State {
 		std::vector<not_null<PeerData*>> from;
 		std::vector<std::unique_ptr<Ui::UserpicButton>> buttons;
@@ -627,13 +643,18 @@ object_ptr<Ui::RpWidget> CreateBoostReplaceUserpics(
 			button->render(&q, position, QRegion(), QWidget::DrawChildren);
 		}
 		state->painting = false;
+		const auto boosting = (type == UserpicsTransferType::BoostReplace);
 		const auto last = state->buttons.back().get();
+		const auto back = boosting ? last : right;
 		const auto add = st::boostReplaceIconAdd;
-		const auto skip = st::boostReplaceIconSkip;
-		const auto w = st::boostReplaceIcon.width() + 2 * skip;
-		const auto h = st::boostReplaceIcon.height() + 2 * skip;
-		const auto x = last->x() + last->width() - w + add.x();
-		const auto y = last->y() + last->height() - h + add.y();
+		const auto &icon = boosting
+			? st::boostReplaceIcon
+			: st::starrefJoinIcon;
+		const auto skip = boosting ? st::boostReplaceIconSkip : 0;
+		const auto w = icon.width() + 2 * skip;
+		const auto h = icon.height() + 2 * skip;
+		const auto x = back->x() + back->width() - w + add.x();
+		const auto y = back->y() + back->height() - h + add.y();
 
 		auto brush = QLinearGradient(QPointF(x + w, y + h), QPointF(x, y));
 		brush.setStops(Ui::Premium::ButtonGradientStops());
@@ -641,7 +662,7 @@ object_ptr<Ui::RpWidget> CreateBoostReplaceUserpics(
 		pen.setWidthF(stroke);
 		q.setPen(pen);
 		q.drawEllipse(x - half, y - half, w + stroke, h + stroke);
-		st::boostReplaceIcon.paint(q, x + skip, y + skip, outerw);
+		icon.paint(q, x + skip, y + skip, outerw);
 
 		const auto size = st::boostReplaceArrow.size();
 		st::boostReplaceArrow.paint(
@@ -652,6 +673,145 @@ object_ptr<Ui::RpWidget> CreateBoostReplaceUserpics(
 			(last->height() - size.height()) / 2,
 			outerw);
 
+		q.end();
+
+		auto p = QPainter(overlay);
+		p.drawImage(0, 0, state->layer);
+	}, overlay->lifetime());
+	return result;
+}
+
+object_ptr<Ui::RpWidget> CreateUserpicsWithMoreBadge(
+		not_null<Ui::RpWidget*> parent,
+		rpl::producer<std::vector<not_null<PeerData*>>> peers,
+		int limit) {
+	struct State {
+		std::vector<not_null<PeerData*>> from;
+		std::vector<std::unique_ptr<Ui::UserpicButton>> buttons;
+		QImage layer;
+		QImage badge;
+		rpl::variable<int> count = 0;
+		bool painting = false;
+	};
+	const auto full = st::boostReplaceUserpic.size.height()
+		+ st::boostReplaceIconAdd.y()
+		+ st::lineWidth;
+	auto result = object_ptr<Ui::FixedHeightWidget>(parent, full);
+	const auto raw = result.data();
+	const auto overlay = CreateChild<Ui::RpWidget>(raw);
+
+	const auto state = raw->lifetime().make_state<State>();
+	std::move(
+		peers
+	) | rpl::start_with_next([=](
+			const std::vector<not_null<PeerData*>> &list) {
+		const auto &st = st::boostReplaceUserpic;
+		auto was = base::take(state->from);
+		auto buttons = base::take(state->buttons);
+		state->from.reserve(list.size());
+		state->buttons.reserve(list.size());
+		for (const auto &peer : list | ranges::views::take(limit)) {
+			state->from.push_back(peer);
+			const auto i = ranges::find(was, peer);
+			if (i != end(was)) {
+				const auto index = int(i - begin(was));
+				Assert(buttons[index] != nullptr);
+				state->buttons.push_back(std::move(buttons[index]));
+			} else {
+				state->buttons.push_back(
+					std::make_unique<Ui::UserpicButton>(raw, peer, st));
+				const auto raw = state->buttons.back().get();
+				base::install_event_filter(raw, [=](not_null<QEvent*> e) {
+					return (e->type() == QEvent::Paint && !state->painting)
+						? base::EventFilterResult::Cancel
+						: base::EventFilterResult::Continue;
+				});
+			}
+		}
+		state->count.force_assign(int(list.size()));
+		overlay->update();
+	}, raw->lifetime());
+
+	rpl::combine(
+		raw->widthValue(),
+		state->count.value()
+	) | rpl::start_with_next([=](int width, int count) {
+		const auto &st = st::boostReplaceUserpic;
+		const auto single = st.size.width();
+		const auto left = width - single;
+		const auto used = std::min(count, int(state->buttons.size()));
+		const auto shift = std::min(
+			st::boostReplaceUserpicsShift,
+			(used > 1 ? (left / (used - 1)) : width));
+		const auto total = used ? (single + (used - 1) * shift) : 0;
+		auto x = (width - total) / 2;
+		for (const auto &single : state->buttons) {
+			single->moveToLeft(x, 0);
+			x += shift;
+		}
+		overlay->setGeometry(QRect(0, 0, width, raw->height()));
+	}, raw->lifetime());
+
+	overlay->paintRequest(
+	) | rpl::filter([=] {
+		return !state->buttons.empty();
+	}) | rpl::start_with_next([=] {
+		const auto outerw = overlay->width();
+		const auto ratio = style::DevicePixelRatio();
+		if (state->layer.size() != QSize(outerw, full) * ratio) {
+			state->layer = QImage(
+				QSize(outerw, full) * ratio,
+				QImage::Format_ARGB32_Premultiplied);
+			state->layer.setDevicePixelRatio(ratio);
+		}
+		state->layer.fill(Qt::transparent);
+
+		auto q = QPainter(&state->layer);
+		auto hq = PainterHighQualityEnabler(q);
+		const auto stroke = st::boostReplaceIconOutline;
+		const auto half = stroke / 2.;
+		auto pen = st::windowBg->p;
+		pen.setWidthF(stroke * 2.);
+		state->painting = true;
+		for (const auto &button : state->buttons) {
+			q.setPen(pen);
+			q.setBrush(Qt::NoBrush);
+			q.drawEllipse(button->geometry());
+			const auto position = button->pos();
+			button->render(&q, position, QRegion(), QWidget::DrawChildren);
+		}
+		state->painting = false;
+		const auto last = state->buttons.back().get();
+		const auto add = st::boostReplaceIconAdd;
+		const auto skip = st::boostReplaceIconSkip;
+		const auto w = st::boostReplaceIcon.width() + 2 * skip;
+		const auto h = st::boostReplaceIcon.height() + 2 * skip;
+		const auto x = last->x() + last->width() - w + add.x();
+		const auto y = last->y() + last->height() - h + add.y();
+
+		const auto text = (state->count.current() > limit)
+			? ('+' + QString::number(state->count.current() - limit))
+			: QString();
+		if (!text.isEmpty()) {
+			const auto &font = st::semiboldFont;
+			const auto width = font->width(text);
+			const auto padded = std::max(w, width + 2 * font->spacew);
+			const auto rect = QRect(x - (padded - w) / 2, y, padded, h);
+			auto brush = QLinearGradient(rect.bottomRight(), rect.topLeft());
+			brush.setStops(Ui::Premium::ButtonGradientStops());
+			q.setBrush(brush);
+			pen.setWidthF(stroke);
+			q.setPen(pen);
+			const auto rectf = QRectF(rect);
+			const auto radius = std::min(rect.width(), rect.height()) / 2.;
+			q.drawRoundedRect(
+				rectf.marginsAdded(QMarginsF{ half, half, half, half }),
+				radius,
+				radius);
+			q.setFont(font);
+			q.setPen(st::premiumButtonFg);
+			q.drawText(rect, Qt::AlignCenter, text);
+		}
 		q.end();
 
 		auto p = QPainter(overlay);

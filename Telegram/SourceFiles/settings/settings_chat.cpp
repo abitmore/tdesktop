@@ -7,8 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/settings_chat.h"
 
+#include "base/timer_rpl.h"
 #include "settings/settings_advanced.h"
+#include "settings/settings_privacy_security.h"
 #include "settings/settings_experimental.h"
+#include "settings/settings_shortcuts.h"
 #include "boxes/abstract_box.h"
 #include "boxes/peers/edit_peer_color_box.h"
 #include "boxes/connection_box.h"
@@ -20,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/background_preview_box.h"
 #include "boxes/download_path_box.h"
 #include "boxes/local_storage_box.h"
+#include "ui/boxes/choose_font_box.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/widgets/fields/input_field.h"
@@ -37,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/vertical_list.h"
 #include "ui/ui_utility.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "history/view/history_view_quick_action.h"
 #include "lang/lang_keys.h"
 #include "export/export_manager.h"
@@ -477,7 +482,7 @@ void BackgroundRow::paintEvent(QPaintEvent *e) {
 			const auto &pix = backThumb->pix(
 				st::settingsBackgroundThumb,
 				{ .options = Images::Option::Blur });
-			const auto factor = cIntRetinaFactor();
+			const auto factor = style::DevicePixelRatio();
 			p.drawPixmap(
 				0,
 				0,
@@ -584,7 +589,7 @@ void BackgroundRow::radialAnimationCallback(crl::time now) {
 
 void BackgroundRow::updateImage() {
 	const auto size = st::settingsBackgroundThumb;
-	const auto fullsize = size * cIntRetinaFactor();
+	const auto fullsize = size * style::DevicePixelRatio();
 
 	const auto &background = *Window::Theme::Background();
 	const auto &paper = background.paper();
@@ -618,7 +623,7 @@ void BackgroundRow::updateImage() {
 		auto result = QImage(
 			QSize{ fullsize, fullsize },
 			QImage::Format_ARGB32_Premultiplied);
-		result.setDevicePixelRatio(cRetinaFactor());
+		result.setDevicePixelRatio(style::DevicePixelRatio());
 		if (const auto color = background.colorForFill()) {
 			result.fill(*color);
 			return result;
@@ -643,7 +648,7 @@ void BackgroundRow::updateImage() {
 		: prepareNormal();
 	_background = Ui::PixmapFromImage(
 		Images::Round(std::move(back), ImageRoundRadius::Small));
-	_background.setDevicePixelRatio(cRetinaFactor());
+	_background.setDevicePixelRatio(style::DevicePixelRatio());
 
 	rtlupdate(radialRect());
 
@@ -871,7 +876,6 @@ void SetupMessages(
 	groupSend->setChangedCallback([=](SendByType value) {
 		Core::App().settings().setSendSubmitWay(value);
 		Core::App().saveSettingsDelayed();
-		controller->content()->ctrlEnterSubmitUpdated();
 	});
 
 	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
@@ -893,24 +897,10 @@ void SetupMessages(
 		Quick::React,
 		tr::lng_settings_chat_quick_action_react(tr::now));
 
-	class EmptyButton final : public Ui::IconButton {
-	public:
-		EmptyButton(not_null<Ui::RpWidget*> p, const style::IconButton &st)
-		: Ui::IconButton(p, st)
-		, _rippleAreaPosition(st.rippleAreaPosition) {
-		}
-	protected:
-		void paintEvent(QPaintEvent *e) override {
-			auto p = QPainter(this);
-
-			paintRipple(p, _rippleAreaPosition, nullptr);
-		}
-	private:
-		const QPoint _rippleAreaPosition;
-	};
-	const auto buttonRight = Ui::CreateChild<EmptyButton>(
+	const auto buttonRight = Ui::CreateSimpleCircleButton(
 		inner,
-		st::stickersRemove);
+		st::stickersRemove.ripple);
+	buttonRight->resize(st::stickersRemove.width, st::stickersRemove.height);
 	const auto toggleButtonRight = [=](bool value) {
 		buttonRight->setAttribute(Qt::WA_TransparentForMouseEvents, !value);
 	};
@@ -1014,14 +1004,23 @@ void SetupMessages(
 		Core::App().saveSettingsDelayed();
 	}, inner->lifetime());
 
-	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
+	Ui::AddSkip(inner);
 }
 
 void SetupArchive(
 		not_null<Window::SessionController*> controller,
-		not_null<Ui::VerticalLayout*> container) {
-	Ui::AddDivider(container);
+		not_null<Ui::VerticalLayout*> container,
+		Fn<void(Type)> showOther) {
 	Ui::AddSkip(container);
+
+	AddButtonWithIcon(
+		container,
+		tr::lng_settings_shortcuts(),
+		st::settingsButton,
+		{ &st::menuIconShortcut }
+	)->addClickHandler([=] {
+		showOther(Shortcuts::Id());
+	});
 
 	PreloadArchiveSettings(&controller->session());
 	AddButtonWithIcon(
@@ -1070,9 +1069,7 @@ void SetupLocalStorage(
 		tr::lng_settings_manage_local_storage(),
 		st::settingsButton,
 		{ &st::menuIconStorage }
-	)->addClickHandler([=] {
-		LocalStorageBox::Show(&controller->session());
-	});
+	)->addClickHandler([=] { LocalStorageBox::Show(controller); });
 }
 
 void SetupDataStorage(
@@ -1104,7 +1101,7 @@ void SetupDataStorage(
 	auto pathtext = Core::App().settings().downloadPathValue(
 	) | rpl::map([](const QString &text) {
 		if (text.isEmpty()) {
-			return Core::App().canReadDefaultDownloadPath(true)
+			return Core::App().canReadDefaultDownloadPath()
 				? tr::lng_download_path_default(tr::now)
 				: tr::lng_download_path_temp(tr::now);
 		} else if (text == FileDialog::Tmp()) {
@@ -1574,7 +1571,8 @@ void SetupThemeSettings(
 	AddPeerColorButton(
 		container,
 		controller->uiShow(),
-		controller->session().user());
+		controller->session().user(),
+		st::settingsColorButton);
 
 	const auto settings = &Core::App().settings();
 	if (settings->systemDarkMode().has_value()) {
@@ -1601,6 +1599,52 @@ void SetupThemeSettings(
 			}
 		});
 	}
+
+	const auto family = container->lifetime().make_state<
+		rpl::variable<QString>
+	>(settings->customFontFamily());
+	auto label = family->value() | rpl::map([](QString family) {
+		return family.isEmpty()
+			? tr::lng_font_default(tr::now)
+			: (family == style::SystemFontTag())
+			? tr::lng_font_system(tr::now)
+			: family;
+	});
+	AddButtonWithLabel(
+		container,
+		tr::lng_settings_font_family(),
+		std::move(label),
+		st::settingsButton,
+		{ &st::menuIconFont }
+	)->setClickedCallback([=] {
+		const auto save = [=](QString chosen) {
+			*family = chosen;
+			settings->setCustomFontFamily(chosen);
+			Local::writeSettings();
+			Core::Restart();
+		};
+
+		const auto theme = std::shared_ptr<Ui::ChatTheme>(
+			Window::Theme::DefaultChatThemeOn(container->lifetime()));
+		const auto generateBg = [=] {
+			const auto size = st::boxWidth;
+			const auto ratio = style::DevicePixelRatio();
+			auto result = QImage(
+				QSize(size, size) * ratio,
+				QImage::Format_ARGB32_Premultiplied);
+			auto p = QPainter(&result);
+			Window::SectionWidget::PaintBackground(
+				p,
+				theme.get(),
+				QSize(size, size * 3),
+				QRect(0, 0, size, size));
+			p.end();
+
+			return result;
+		};
+		controller->show(
+			Box(Ui::ChooseFontBox, generateBg, family->current(), save));
+	});
 
 	Ui::AddSkip(container, st::settingsCheckboxesSkip);
 }
@@ -1732,7 +1776,8 @@ void SetupSupport(
 }
 
 Chat::Chat(QWidget *parent, not_null<Window::SessionController*> controller)
-: Section(parent) {
+: Section(parent)
+, _controller(controller) {
 	setupContent(controller);
 }
 
@@ -1740,8 +1785,19 @@ rpl::producer<QString> Chat::title() {
 	return tr::lng_settings_section_chat_settings();
 }
 
+void Chat::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+	const auto window = &_controller->window();
+	addAction(
+		tr::lng_settings_bg_theme_create(tr::now),
+		[=] { window->show(Box(Window::Theme::CreateBox, window)); },
+		&st::menuIconChangeColors);
+}
+
 void Chat::setupContent(not_null<Window::SessionController*> controller) {
 	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
+
+	auto updateOnTick = rpl::single(
+	) | rpl::then(base::timer_each(60 * crl::time(1000)));
 
 	SetupThemeOptions(controller, content);
 	SetupThemeSettings(controller, content);
@@ -1749,7 +1805,9 @@ void Chat::setupContent(not_null<Window::SessionController*> controller) {
 	SetupChatBackground(controller, content);
 	SetupStickersEmoji(controller, content);
 	SetupMessages(controller, content);
-	SetupArchive(controller, content);
+	Ui::AddDivider(content);
+	SetupSensitiveContent(controller, content, std::move(updateOnTick));
+	SetupArchive(controller, content, showOtherMethod());
 
 	Ui::ResizeFitChild(this, content);
 }

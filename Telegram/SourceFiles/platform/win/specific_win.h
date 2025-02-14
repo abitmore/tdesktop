@@ -28,10 +28,6 @@ inline bool SkipTaskbarSupported() {
 	return true;
 }
 
-inline bool RunInBackground() {
-	return false;
-}
-
 inline bool PreventsQuit(Core::QuitReason reason) {
 	return false;
 }
@@ -54,9 +50,6 @@ inline QString ExecutablePathForShortcuts() {
 namespace ThirdParty {
 
 void start();
-
-inline void finish() {
-}
 
 } // namespace ThirdParty
 } // namespace Platform

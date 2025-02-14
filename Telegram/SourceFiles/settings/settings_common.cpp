@@ -89,6 +89,7 @@ void AddButtonIcon(
 		std::move(descriptor));
 	icon->widget.setAttribute(Qt::WA_TransparentForMouseEvents);
 	icon->widget.resize(icon->icon.size());
+	icon->widget.show();
 	button->sizeValue(
 	) | rpl::start_with_next([=, left = st.iconLeft](QSize size) {
 		icon->widget.moveToLeft(
@@ -170,39 +171,46 @@ not_null<Button*> AddButtonWithLabel(
 }
 
 void AddDividerTextWithLottie(
-		not_null<Ui::VerticalLayout*> parent,
-		rpl::producer<> showFinished,
-		rpl::producer<TextWithEntities> text,
-		const QString &lottie) {
-	const auto divider = Ui::CreateChild<Ui::BoxContentDivider>(parent.get());
-	const auto verticalLayout = parent->add(
-		object_ptr<Ui::VerticalLayout>(parent.get()));
-
+		not_null<Ui::VerticalLayout*> container,
+		DividerWithLottieDescriptor &&descriptor) {
+	const auto divider = Ui::CreateChild<Ui::BoxContentDivider>(
+		container.get(),
+		0,
+		st::boxDividerBg,
+		descriptor.parts);
+	const auto verticalLayout = container->add(
+		object_ptr<Ui::VerticalLayout>(container.get()));
+	const auto size = descriptor.lottieSize.value_or(
+		st::settingsFilterIconSize);
 	auto icon = CreateLottieIcon(
 		verticalLayout,
 		{
-			.name = lottie,
-			.sizeOverride = {
-				st::settingsFilterIconSize,
-				st::settingsFilterIconSize,
-			},
+			.name = descriptor.lottie,
+			.sizeOverride = { size, size },
 		},
-		st::settingsFilterIconPadding);
-	std::move(
-		showFinished
-	) | rpl::start_with_next([animate = std::move(icon.animate)] {
-		animate(anim::repeat::once);
-	}, verticalLayout->lifetime());
+		descriptor.lottieMargins.value_or(st::settingsFilterIconPadding));
+	if (descriptor.showFinished) {
+		const auto repeat = descriptor.lottieRepeat.value_or(
+			anim::repeat::once);
+		std::move(
+			descriptor.showFinished
+		) | rpl::start_with_next([animate = std::move(icon.animate), repeat] {
+			animate(repeat);
+		}, verticalLayout->lifetime());
+	}
 	verticalLayout->add(std::move(icon.widget));
 
-	verticalLayout->add(
-		object_ptr<Ui::CenterWrap<>>(
-			verticalLayout,
-			object_ptr<Ui::FlatLabel>(
+	if (descriptor.about) {
+		verticalLayout->add(
+			object_ptr<Ui::CenterWrap<>>(
 				verticalLayout,
-				std::move(text),
-				st::settingsFilterDividerLabel)),
-		st::settingsFilterDividerLabelPadding);
+				object_ptr<Ui::FlatLabel>(
+					verticalLayout,
+					std::move(descriptor.about),
+					st::settingsFilterDividerLabel)),
+			descriptor.aboutMargins.value_or(
+				st::settingsFilterDividerLabelPadding));
+	}
 
 	verticalLayout->geometryValue(
 	) | rpl::start_with_next([=](const QRect &r) {
@@ -258,14 +266,17 @@ SliderWithLabel MakeSliderWithLabel(
 		const style::MediaSlider &sliderSt,
 		const style::FlatLabel &labelSt,
 		int skip,
-		int minLabelWidth) {
+		int minLabelWidth,
+		bool ignoreWheel) {
 	auto result = object_ptr<Ui::RpWidget>(parent);
 	const auto raw = result.data();
 	const auto height = std::max(
 		sliderSt.seekSize.height(),
 		labelSt.style.font->height);
 	raw->resize(sliderSt.seekSize.width(), height);
-	const auto slider = Ui::CreateChild<Ui::MediaSlider>(raw, sliderSt);
+	const auto slider = ignoreWheel
+		? Ui::CreateChild<Ui::MediaSliderWheelless>(raw, sliderSt)
+		: Ui::CreateChild<Ui::MediaSlider>(raw, sliderSt);
 	const auto label = Ui::CreateChild<Ui::FlatLabel>(raw, labelSt);
 	slider->resize(slider->width(), sliderSt.seekSize.height());
 	rpl::combine(

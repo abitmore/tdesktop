@@ -7,7 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "data/data_subscription_option.h"
+#include "data/data_premium_subscription_option.h"
+#include "data/data_star_gift.h"
 #include "mtproto/sender.h"
 
 class History;
@@ -57,6 +58,7 @@ struct GiveawayInfo {
 	TimeId tooEarlyDate = 0;
 	TimeId finishDate = 0;
 	TimeId startDate = 0;
+	uint64 credits = 0;
 	int winnersCount = 0;
 	int activatedCount = 0;
 	bool participating = false;
@@ -64,6 +66,12 @@ struct GiveawayInfo {
 	explicit operator bool() const {
 		return state != GiveawayState::Invalid;
 	}
+};
+
+struct GiftOptionData {
+	int64 cost = 0;
+	QString currency;
+	int months = 0;
 };
 
 class Premium final {
@@ -85,6 +93,10 @@ public:
 		-> const std::vector<not_null<DocumentData*>> &;
 	[[nodiscard]] rpl::producer<> cloudSetUpdated() const;
 
+	[[nodiscard]] auto helloStickers() const
+		-> const std::vector<not_null<DocumentData*>> &;
+	[[nodiscard]] rpl::producer<> helloStickersUpdated() const;
+
 	[[nodiscard]] int64 monthlyAmount() const;
 	[[nodiscard]] QString monthlyCurrency() const;
 
@@ -102,7 +114,7 @@ public:
 		Fn<void(GiveawayInfo)> done);
 
 	[[nodiscard]] auto subscriptionOptions() const
-		-> const Data::SubscriptionOptions &;
+		-> const Data::PremiumSubscriptionOptions &;
 
 	[[nodiscard]] rpl::producer<> somePremiumRequiredResolved() const;
 	void resolvePremiumRequired(not_null<UserData*> user);
@@ -111,6 +123,7 @@ private:
 	void reloadPromo();
 	void reloadStickers();
 	void reloadCloudSet();
+	void reloadHelloStickers();
 	void requestPremiumRequiredSlice();
 
 	const not_null<Main::Session*> _session;
@@ -133,6 +146,11 @@ private:
 	std::vector<not_null<DocumentData*>> _cloudSet;
 	rpl::event_stream<> _cloudSetUpdated;
 
+	mtpRequestId _helloStickersRequestId = 0;
+	uint64 _helloStickersHash = 0;
+	std::vector<not_null<DocumentData*>> _helloStickers;
+	rpl::event_stream<> _helloStickersUpdated;
+
 	int64 _monthlyAmount = 0;
 	QString _monthlyCurrency;
 
@@ -146,7 +164,7 @@ private:
 	MsgId _giveawayInfoMessageId = 0;
 	Fn<void(GiveawayInfo)> _giveawayInfoDone;
 
-	Data::SubscriptionOptions _subscriptionOptions;
+	Data::PremiumSubscriptionOptions _subscriptionOptions;
 
 	rpl::event_stream<> _somePremiumRequiredResolved;
 	base::flat_set<not_null<UserData*>> _resolvePremiumRequiredUsers;
@@ -160,7 +178,8 @@ public:
 	PremiumGiftCodeOptions(not_null<PeerData*> peer);
 
 	[[nodiscard]] rpl::producer<rpl::no_value, QString> request();
-	[[nodiscard]] Data::SubscriptionOptions options(int amount);
+	[[nodiscard]] std::vector<GiftOptionData> optionsForPeer() const;
+	[[nodiscard]] Data::PremiumSubscriptionOptions options(int amount);
 	[[nodiscard]] const std::vector<int> &availablePresets() const;
 	[[nodiscard]] int monthsFromPreset(int monthsIndex);
 	[[nodiscard]] Payments::InvoicePremiumGiftCode invoice(
@@ -176,6 +195,9 @@ public:
 	[[nodiscard]] int giveawayPeriodMax() const;
 	[[nodiscard]] bool giveawayGiftsPurchaseAvailable() const;
 
+	[[nodiscard]] rpl::producer<rpl::no_value, QString> requestStarGifts();
+	[[nodiscard]] const std::vector<Data::StarGift> &starGifts() const;
+
 private:
 	struct Token final {
 		int users = 0;
@@ -190,11 +212,12 @@ private:
 		int quantity = 0;
 	};
 	using Amount = int;
+	using PremiumSubscriptionOptions = Data::PremiumSubscriptionOptions;
 	const not_null<PeerData*> _peer;
-	base::flat_map<Amount, Data::SubscriptionOptions> _subscriptionOptions;
+	base::flat_map<Amount, PremiumSubscriptionOptions> _subscriptionOptions;
 	struct {
 		std::vector<int> months;
-		std::vector<float64> totalCosts;
+		std::vector<int64> totalCosts;
 		QString currency;
 	} _optionsForOnePerson;
 
@@ -202,6 +225,21 @@ private:
 
 	base::flat_map<Token, Store> _stores;
 
+	int32 _giftsHash = 0;
+	std::vector<Data::StarGift> _gifts;
+
+	MTP::Sender _api;
+
+};
+
+class SponsoredToggle final {
+public:
+	explicit SponsoredToggle(not_null<Main::Session*> session);
+
+	[[nodiscard]] rpl::producer<bool> toggled();
+	[[nodiscard]] rpl::producer<rpl::no_value, QString> setToggled(bool);
+
+private:
 	MTP::Sender _api;
 
 };
@@ -214,5 +252,27 @@ enum class RequirePremiumState {
 [[nodiscard]] RequirePremiumState ResolveRequiresPremiumToWrite(
 	not_null<PeerData*> peer,
 	History *maybeHistory);
+
+[[nodiscard]] rpl::producer<DocumentData*> RandomHelloStickerValue(
+	not_null<Main::Session*> session);
+
+[[nodiscard]] std::optional<Data::StarGift> FromTL(
+	not_null<Main::Session*> session,
+	const MTPstarGift &gift);
+[[nodiscard]] std::optional<Data::SavedStarGift> FromTL(
+	not_null<PeerData*> to,
+	const MTPsavedStarGift &gift);
+
+[[nodiscard]] Data::UniqueGiftModel FromTL(
+	not_null<Main::Session*> session,
+	const MTPDstarGiftAttributeModel &data);
+[[nodiscard]] Data::UniqueGiftPattern FromTL(
+	not_null<Main::Session*> session,
+	const MTPDstarGiftAttributePattern &data);
+[[nodiscard]] Data::UniqueGiftBackdrop FromTL(
+	const MTPDstarGiftAttributeBackdrop &data);
+[[nodiscard]] Data::UniqueGiftOriginalDetails FromTL(
+	not_null<Main::Session*> session,
+	const MTPDstarGiftAttributeOriginalDetails &data);
 
 } // namespace Api

@@ -57,17 +57,10 @@ include(cmake/validate_d3d_compiler.cmake)
 include(cmake/target_prepare_qrc.cmake)
 
 include(cmake/options.cmake)
-
-if (NOT DESKTOP_APP_USE_PACKAGED)
-    if (WIN32)
-        set(qt_version 5.15.12)
-    elseif (APPLE)
-        set(qt_version 6.2.7)
-    endif()
-endif()
 include(cmake/external/qt/package.cmake)
 
 set(desktop_app_skip_libs
+    glibmm
     variant
 )
 

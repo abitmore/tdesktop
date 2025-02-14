@@ -85,9 +85,6 @@ public:
 		_groupEmojiSectionHidden.remove(peerId);
 	}
 
-	void setMediaLastPlaybackPosition(DocumentId id, crl::time time);
-	[[nodiscard]] crl::time mediaLastPlaybackPosition(DocumentId id) const;
-
 	[[nodiscard]] Data::AutoDownload::Full &autoDownload() {
 		return _autoDownload;
 	}
@@ -132,6 +129,19 @@ public:
 	[[nodiscard]] std::vector<TimeId> mutePeriods() const;
 	void addMutePeriod(TimeId period);
 
+	[[nodiscard]] TimeId lastNonPremiumLimitDownload() const {
+		return _lastNonPremiumLimitDownload;
+	}
+	[[nodiscard]] TimeId lastNonPremiumLimitUpload() const {
+		return _lastNonPremiumLimitUpload;
+	}
+	void setLastNonPremiumLimitDownload(TimeId when) {
+		_lastNonPremiumLimitDownload = when;
+	}
+	void setLastNonPremiumLimitUpload(TimeId when) {
+		_lastNonPremiumLimitUpload = when;
+	}
+
 private:
 	static constexpr auto kDefaultSupportChatsLimitSlice = 7 * 24 * 60 * 60;
 	static constexpr auto kPhotoEditorHintMaxShowsCount = 5;
@@ -153,11 +163,12 @@ private:
 	rpl::variable<bool> _archiveCollapsed = false;
 	rpl::variable<bool> _archiveInMainMenu = false;
 	rpl::variable<bool> _skipArchiveInSearch = false;
-	std::vector<std::pair<DocumentId, crl::time>> _mediaLastPlaybackPosition;
 	base::flat_map<ThreadId, MsgId> _hiddenPinnedMessages;
 	bool _dialogsFiltersEnabled = false;
 	int _photoEditorHintShowsCount = 0;
 	std::vector<TimeId> _mutePeriods;
+	TimeId _lastNonPremiumLimitDownload = 0;
+	TimeId _lastNonPremiumLimitUpload = 0;
 
 	Support::SwitchSettings _supportSwitch;
 	bool _supportFixChatsOrder = true;
